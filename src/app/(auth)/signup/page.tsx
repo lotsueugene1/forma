@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useEffect, Suspense } from 'react';
+import { useState, Suspense } from 'react';
 import Link from 'next/link';
+import Script from 'next/script';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { signIn } from 'next-auth/react';
 import { motion } from 'framer-motion';
@@ -17,6 +18,37 @@ import {
 } from '@phosphor-icons/react';
 import { cn } from '@/lib/utils';
 
+const RECAPTCHA_SITE_KEY = process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY;
+const RECAPTCHA_ACTION = 'signup';
+
+declare global {
+  interface Window {
+    grecaptcha?: {
+      ready: (callback: () => void) => void;
+      execute: (siteKey: string, options: { action: string }) => Promise<string>;
+    };
+  }
+}
+
+function createRecaptchaToken(): Promise<string | undefined> {
+  if (!RECAPTCHA_SITE_KEY) return Promise.resolve(undefined);
+
+  return new Promise((resolve, reject) => {
+    const recaptcha = window.grecaptcha;
+    if (!recaptcha) {
+      reject(new Error('reCAPTCHA has not loaded'));
+      return;
+    }
+
+    recaptcha.ready(() => {
+      recaptcha
+        .execute(RECAPTCHA_SITE_KEY, { action: RECAPTCHA_ACTION })
+        .then(resolve)
+        .catch(reject);
+    });
+  });
+}
+
 const features = [
   'Up to 3 forms on free plan',
   'No credit card required',
@@ -29,17 +61,11 @@ function SignupForm() {
   const callbackUrl = searchParams.get('callbackUrl') || '/dashboard';
   const prefillEmail = searchParams.get('email') || '';
   const [isLoading, setIsLoading] = useState(false);
+  const [isRecaptchaReady, setIsRecaptchaReady] = useState(!RECAPTCHA_SITE_KEY);
   const [error, setError] = useState('');
   const [name, setName] = useState('');
   const [email, setEmail] = useState(prefillEmail);
   const [password, setPassword] = useState('');
-
-  // Update email if prefillEmail changes (e.g., on navigation)
-  useEffect(() => {
-    if (prefillEmail) {
-      setEmail(prefillEmail);
-    }
-  }, [prefillEmail]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -47,11 +73,20 @@ function SignupForm() {
     setError('');
 
     try {
+      let recaptchaToken: string | undefined;
+      try {
+        recaptchaToken = await createRecaptchaToken();
+      } catch {
+        setError('The security check could not load. Please refresh the page and try again.');
+        setIsLoading(false);
+        return;
+      }
+
       // Register the user
       const registerResponse = await fetch('/api/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, email, password }),
+        body: JSON.stringify({ name, email, password, recaptchaToken }),
       });
 
       const registerData = await registerResponse.json();
@@ -76,178 +111,217 @@ function SignupForm() {
       }
 
       router.push(callbackUrl);
-    } catch (err) {
+    } catch {
       setError('Something went wrong. Please try again.');
       setIsLoading(false);
     }
   };
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.4 }}
-    >
-      {/* Mobile Logo */}
-      <Link href="/" className="lg:hidden flex items-center gap-2 justify-center mb-8">
-        <Stack size={28} weight="fill" className="text-safety-orange" />
-        <span className="font-sans text-xl font-medium tracking-tight text-gray-900">
-          Forma
-        </span>
-      </Link>
-
-      {/* Header */}
-      <div className="text-center mb-8">
-        <h1 className="text-2xl font-semibold text-gray-900 mb-2">
-          Create your account
-        </h1>
-        <p className="text-gray-500">
-          Start building forms in minutes
-        </p>
-      </div>
-
-      {/* Features */}
-      <div className="flex flex-wrap justify-center gap-x-4 gap-y-2 mb-6">
-        {features.map((feature) => (
-          <div key={feature} className="flex items-center gap-1.5 text-sm text-gray-600">
-            <Check size={14} weight="bold" className="text-safety-orange" />
-            {feature}
-          </div>
-        ))}
-      </div>
-
-      {/* Error Message */}
-      {error && (
-        <div className="mb-4 p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-red-600 text-sm text-center">
-          {error}
-        </div>
+    <>
+      {RECAPTCHA_SITE_KEY && (
+        <Script
+          src={`https://www.google.com/recaptcha/api.js?render=${encodeURIComponent(RECAPTCHA_SITE_KEY)}`}
+          strategy="afterInteractive"
+          onReady={() => setIsRecaptchaReady(true)}
+          onError={() => {
+            setIsRecaptchaReady(false);
+            setError('The security check could not load. Check any content blocker and refresh the page.');
+          }}
+        />
       )}
-
-      {/* Social Login */}
-      <div className="flex gap-3 mb-6">
-        <button
-          type="button"
-          onClick={() => signIn('github', { callbackUrl })}
-          className="flex-1 btn btn-secondary justify-center"
-        >
-          <GithubLogo size={20} weight="fill" />
-          GitHub
-        </button>
-        <button
-          type="button"
-          onClick={() => signIn('google', { callbackUrl })}
-          className="flex-1 btn btn-secondary justify-center"
-        >
-          <GoogleLogo size={20} weight="fill" />
-          Google
-        </button>
-      </div>
-
-      {/* Divider */}
-      <div className="relative my-6">
-        <div className="absolute inset-0 flex items-center">
-          <div className="w-full border-t border-gray-200" />
-        </div>
-        <div className="relative flex justify-center">
-          <span className="px-3 bg-white text-gray-500 text-xs font-mono uppercase tracking-wider">
-            or continue with email
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4 }}
+      >
+        {/* Mobile Logo */}
+        <Link href="/" className="lg:hidden flex items-center gap-2 justify-center mb-8">
+          <Stack size={28} weight="fill" className="text-safety-orange" />
+          <span className="font-sans text-xl font-medium tracking-tight text-gray-900">
+            Forma
           </span>
-        </div>
-      </div>
-
-      {/* Form */}
-      <form onSubmit={handleSubmit} className="space-y-4">
-        <div className="form-field">
-          <label htmlFor="name" className="form-label">Full Name</label>
-          <div className="relative">
-            <User size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
-            <input
-              id="name"
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Your full name"
-              className="input input-with-icon"
-              required
-            />
-          </div>
-        </div>
-
-        <div className="form-field">
-          <label htmlFor="email" className="form-label">Work Email</label>
-          <div className="relative">
-            <EnvelopeSimple size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
-            <input
-              id="email"
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@company.com"
-              className="input input-with-icon"
-              required
-            />
-          </div>
-        </div>
-
-        <div className="form-field">
-          <label htmlFor="password" className="form-label">Password</label>
-          <div className="relative">
-            <Lock size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
-            <input
-              id="password"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="Create a password (min 8 chars)"
-              className="input input-with-icon"
-              minLength={8}
-              required
-            />
-          </div>
-        </div>
-
-        <button
-          type="submit"
-          disabled={isLoading}
-          className={cn(
-            'btn btn-primary w-full justify-center',
-            isLoading && 'opacity-70 cursor-not-allowed'
-          )}
-        >
-          {isLoading ? (
-            <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-          ) : (
-            <>
-              Create Account
-              <ArrowRight size={18} weight="bold" />
-            </>
-          )}
-        </button>
-      </form>
-
-      {/* Terms */}
-      <p className="mt-6 text-center text-xs text-gray-500">
-        By signing up, you agree to our{' '}
-        <Link href="/terms" className="text-gray-600 hover:text-gray-900 transition-colors">
-          Terms of Service
-        </Link>{' '}
-        and{' '}
-        <Link href="/privacy" className="text-gray-600 hover:text-gray-900 transition-colors">
-          Privacy Policy
         </Link>
-      </p>
 
-      {/* Footer */}
-      <p className="mt-6 text-center text-sm text-gray-500">
-        Already have an account?{' '}
-        <Link
-          href={callbackUrl !== '/dashboard' ? `/login?callbackUrl=${encodeURIComponent(callbackUrl)}` : '/login'}
-          className="text-safety-orange hover:text-gray-900 font-medium transition-colors"
-        >
-          Sign in
-        </Link>
-      </p>
-    </motion.div>
+        {/* Header */}
+        <div className="text-center mb-8">
+          <h1 className="text-2xl font-semibold text-gray-900 mb-2">
+            Create your account
+          </h1>
+          <p className="text-gray-500">
+            Start building forms in minutes
+          </p>
+        </div>
+
+        {/* Features */}
+        <div className="flex flex-wrap justify-center gap-x-4 gap-y-2 mb-6">
+          {features.map((feature) => (
+            <div key={feature} className="flex items-center gap-1.5 text-sm text-gray-600">
+              <Check size={14} weight="bold" className="text-safety-orange" />
+              {feature}
+            </div>
+          ))}
+        </div>
+
+        {/* Error Message */}
+        {error && (
+          <div className="mb-4 p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-red-600 text-sm text-center">
+            {error}
+          </div>
+        )}
+
+        {/* Social Login */}
+        <div className="flex gap-3 mb-6">
+          <button
+            type="button"
+            onClick={() => signIn('github', { callbackUrl })}
+            className="flex-1 btn btn-secondary justify-center"
+          >
+            <GithubLogo size={20} weight="fill" />
+            GitHub
+          </button>
+          <button
+            type="button"
+            onClick={() => signIn('google', { callbackUrl })}
+            className="flex-1 btn btn-secondary justify-center"
+          >
+            <GoogleLogo size={20} weight="fill" />
+            Google
+          </button>
+        </div>
+
+        {/* Divider */}
+        <div className="relative my-6">
+          <div className="absolute inset-0 flex items-center">
+            <div className="w-full border-t border-gray-200" />
+          </div>
+          <div className="relative flex justify-center">
+            <span className="px-3 bg-white text-gray-500 text-xs font-mono uppercase tracking-wider">
+              or continue with email
+            </span>
+          </div>
+        </div>
+
+        {/* Form */}
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="form-field">
+            <label htmlFor="name" className="form-label">Full Name</label>
+            <div className="relative">
+              <User size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+              <input
+                id="name"
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Your full name"
+                className="input input-with-icon"
+                required
+              />
+            </div>
+          </div>
+
+          <div className="form-field">
+            <label htmlFor="email" className="form-label">Work Email</label>
+            <div className="relative">
+              <EnvelopeSimple size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+              <input
+                id="email"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@company.com"
+                className="input input-with-icon"
+                required
+              />
+            </div>
+          </div>
+
+          <div className="form-field">
+            <label htmlFor="password" className="form-label">Password</label>
+            <div className="relative">
+              <Lock size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+              <input
+                id="password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Create a password (min 8 chars)"
+                className="input input-with-icon"
+                minLength={8}
+                required
+              />
+            </div>
+          </div>
+
+          <button
+            type="submit"
+            disabled={isLoading || !isRecaptchaReady}
+            className={cn(
+              'btn btn-primary w-full justify-center',
+              (isLoading || !isRecaptchaReady) && 'opacity-70 cursor-not-allowed'
+            )}
+          >
+            {isLoading ? (
+              <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+            ) : !isRecaptchaReady ? (
+              'Loading security check…'
+            ) : (
+              <>
+                Create Account
+                <ArrowRight size={18} weight="bold" />
+              </>
+            )}
+          </button>
+        </form>
+
+        {/* Terms */}
+        <p className="mt-6 text-center text-xs text-gray-500">
+          By signing up, you agree to our{' '}
+          <Link href="/terms" className="text-gray-600 hover:text-gray-900 transition-colors">
+            Terms of Service
+          </Link>{' '}
+          and{' '}
+          <Link href="/privacy" className="text-gray-600 hover:text-gray-900 transition-colors">
+            Privacy Policy
+          </Link>
+        </p>
+
+        {RECAPTCHA_SITE_KEY && (
+          <p className="mt-2 text-center text-[11px] leading-4 text-gray-400">
+            This site is protected by reCAPTCHA and the Google{' '}
+            <a
+              href="https://policies.google.com/privacy"
+              target="_blank"
+              rel="noreferrer"
+              className="underline hover:text-gray-600"
+            >
+              Privacy Policy
+            </a>{' '}
+            and{' '}
+            <a
+              href="https://policies.google.com/terms"
+              target="_blank"
+              rel="noreferrer"
+              className="underline hover:text-gray-600"
+            >
+              Terms of Service
+            </a>{' '}
+            apply.
+          </p>
+        )}
+
+        {/* Footer */}
+        <p className="mt-6 text-center text-sm text-gray-500">
+          Already have an account?{' '}
+          <Link
+            href={callbackUrl !== '/dashboard' ? `/login?callbackUrl=${encodeURIComponent(callbackUrl)}` : '/login'}
+            className="text-safety-orange hover:text-gray-900 font-medium transition-colors"
+          >
+            Sign in
+          </Link>
+        </p>
+      </motion.div>
+    </>
   );
 }
 

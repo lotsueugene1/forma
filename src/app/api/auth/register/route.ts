@@ -7,6 +7,7 @@ import { sendWelcomeEmail } from '@/lib/email';
 import { auditLog } from '@/lib/audit';
 import { getClientIp } from '@/lib/api-rate-limit';
 import { grantSignupPremiumIfEnabled } from '@/lib/entitlements';
+import { verifyRecaptchaV3 } from '@/lib/recaptcha';
 
 // Email validation regex
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -18,9 +19,7 @@ const PASSWORD_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/;
 export async function POST(request: NextRequest) {
   try {
     // Rate limiting by IP
-    const fwd = request.headers.get('x-forwarded-for');
-    const ip = fwd ? fwd.split(',').map(s => s.trim()).pop()! :
-               request.headers.get('x-real-ip') || 'unknown';
+    const ip = getClientIp(request);
 
     const rateLimitResult = checkRateLimit(`register:${ip}`, { maxPerMinute: 3, maxPerHour: 5 });
     if (!rateLimitResult.allowed) {
@@ -30,7 +29,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const { name, email, password } = await request.json();
+    const { name, email, password, recaptchaToken } = await request.json();
 
     // Validate required fields
     if (!email || !password) {
@@ -85,6 +84,32 @@ export async function POST(request: NextRequest) {
           { status: 400 }
         );
       }
+    }
+
+    // Verify the browser-generated token before any database or bcrypt work.
+    // When RECAPTCHA_SECRET_KEY is absent (for example in local development),
+    // verification is intentionally skipped.
+    const recaptcha = await verifyRecaptchaV3({
+      token: recaptchaToken,
+      remoteIp: ip,
+      expectedAction: 'signup',
+    });
+
+    if (!recaptcha.success) {
+      console.warn('[Register] reCAPTCHA rejected signup:', {
+        reason: recaptcha.reason,
+        errorCodes: recaptcha.errorCodes,
+      });
+
+      const unavailable = recaptcha.reason === 'service_unavailable';
+      return NextResponse.json(
+        {
+          error: unavailable
+            ? 'Security verification is temporarily unavailable. Please try again.'
+            : 'Security verification failed. Please try again.',
+        },
+        { status: unavailable ? 503 : 400 }
+      );
     }
 
     // Check if user already exists

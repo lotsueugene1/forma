@@ -15,7 +15,7 @@ const nextConfig: NextConfig = {
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data: blob: https://*.amazonaws.com https://lh3.googleusercontent.com https://avatars.githubusercontent.com",
       "font-src 'self' data:",
-      "connect-src 'self' https://api.stripe.com https://vitals.vercel-insights.com",
+      "connect-src 'self' https://api.stripe.com https://vitals.vercel-insights.com https://www.google.com https://www.gstatic.com",
       "frame-src https://js.stripe.com https://www.google.com",
       "object-src 'none'",
       "base-uri 'self'",

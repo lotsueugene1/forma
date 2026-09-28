@@ -77,7 +77,7 @@ Only `DATABASE_URL`, `NEXTAUTH_URL`, and `NEXTAUTH_SECRET` are required to run t
 | `STRIPE_*` | No | Subscriptions & payments |
 | `RESEND_API_KEY` | No | Email automations & broadcasts |
 | `AWS_S3_*` | No | File uploads |
-| `RECAPTCHA_*` | No | Signup spam protection |
+| `RECAPTCHA_*` | No | reCAPTCHA v3 for hosted forms and signup spam protection |
 
 ## Project Structure
 
