@@ -7,7 +7,7 @@ import { sendWelcomeEmail } from '@/lib/email';
 import { auditLog } from '@/lib/audit';
 import { getClientIp } from '@/lib/api-rate-limit';
 import { grantSignupPremiumIfEnabled } from '@/lib/entitlements';
-import { verifyRecaptchaV3 } from '@/lib/recaptcha';
+import { verifyRecaptchaV2 } from '@/lib/recaptcha';
 
 // Email validation regex
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -87,12 +87,12 @@ export async function POST(request: NextRequest) {
     }
 
     // Verify the browser-generated token before any database or bcrypt work.
-    // When RECAPTCHA_SECRET_KEY is absent (for example in local development),
+    // When SIGNUP_RECAPTCHA_SECRET_KEY is absent (for example in local development),
     // verification is intentionally skipped.
-    const recaptcha = await verifyRecaptchaV3({
+    const recaptcha = await verifyRecaptchaV2({
       token: recaptchaToken,
       remoteIp: ip,
-      expectedAction: 'signup',
+      secretKey: process.env.SIGNUP_RECAPTCHA_SECRET_KEY,
     });
 
     if (!recaptcha.success) {

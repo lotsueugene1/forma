@@ -31,11 +31,81 @@ interface VerifyRecaptchaV3Options {
   fetchImpl?: typeof fetch;
 }
 
+type VerifyRecaptchaV2Options = Omit<VerifyRecaptchaV3Options, 'expectedAction' | 'minScore'>;
+
 interface RecaptchaApiResponse {
   success?: boolean;
   score?: number;
   action?: string;
   'error-codes'?: string[];
+}
+
+/**
+ * Verify a visible reCAPTCHA v2 checkbox response. Google performs the
+ * challenge and domain checks; the server only accepts a successful token.
+ */
+export async function verifyRecaptchaV2({
+  token,
+  remoteIp,
+  secretKey = process.env.SIGNUP_RECAPTCHA_SECRET_KEY,
+  fetchImpl = fetch,
+}: VerifyRecaptchaV2Options): Promise<RecaptchaVerificationResult> {
+  const normalizedSecret = secretKey?.trim();
+
+  if (!normalizedSecret) {
+    return { success: true, skipped: true };
+  }
+
+  if (typeof token !== 'string' || !token.trim()) {
+    return { success: false, reason: 'missing_token' };
+  }
+
+  if (token.length > MAX_TOKEN_LENGTH) {
+    return { success: false, reason: 'invalid_token' };
+  }
+
+  let response: Response;
+  try {
+    response = await fetchImpl(RECAPTCHA_VERIFY_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({
+        secret: normalizedSecret,
+        response: token,
+        ...(remoteIp && { remoteip: remoteIp }),
+      }),
+      cache: 'no-store',
+    });
+  } catch {
+    return { success: false, reason: 'service_unavailable' };
+  }
+
+  if (!response.ok) {
+    return { success: false, reason: 'service_unavailable' };
+  }
+
+  let data: RecaptchaApiResponse;
+  try {
+    data = await response.json() as RecaptchaApiResponse;
+  } catch {
+    return { success: false, reason: 'service_unavailable' };
+  }
+
+  if (data.success !== true) {
+    const configurationError = data['error-codes']?.some((code) =>
+      code === 'missing-input-secret' || code === 'invalid-input-secret'
+    );
+
+    return {
+      success: false,
+      reason: configurationError ? 'service_unavailable' : 'invalid_token',
+      errorCodes: data['error-codes'],
+    };
+  }
+
+  return { success: true, skipped: false };
 }
 
 /**

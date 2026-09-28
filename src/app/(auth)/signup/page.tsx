@@ -1,8 +1,7 @@
 'use client';
 
-import { useState, Suspense } from 'react';
+import { useEffect, useRef, useState, Suspense } from 'react';
 import Link from 'next/link';
-import Script from 'next/script';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { signIn } from 'next-auth/react';
 import { motion } from 'framer-motion';
@@ -18,35 +17,26 @@ import {
 } from '@phosphor-icons/react';
 import { cn } from '@/lib/utils';
 
-const RECAPTCHA_SITE_KEY = process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY;
-const RECAPTCHA_ACTION = 'signup';
+const SIGNUP_RECAPTCHA_SITE_KEY = process.env.NEXT_PUBLIC_SIGNUP_RECAPTCHA_SITE_KEY;
 
-declare global {
-  interface Window {
-    grecaptcha?: {
-      ready: (callback: () => void) => void;
-      execute: (siteKey: string, options: { action: string }) => Promise<string>;
-    };
-  }
+interface RecaptchaV2Api {
+  render?: (
+    container: HTMLElement,
+    options: {
+      sitekey: string;
+      theme: 'light';
+      size: 'normal';
+      callback: (token: string) => void;
+      'expired-callback': () => void;
+      'error-callback': () => void;
+    }
+  ) => number;
+  getResponse: (widgetId?: number) => string;
+  reset: (widgetId?: number) => void;
 }
 
-function createRecaptchaToken(): Promise<string | undefined> {
-  if (!RECAPTCHA_SITE_KEY) return Promise.resolve(undefined);
-
-  return new Promise((resolve, reject) => {
-    const recaptcha = window.grecaptcha;
-    if (!recaptcha) {
-      reject(new Error('reCAPTCHA has not loaded'));
-      return;
-    }
-
-    recaptcha.ready(() => {
-      recaptcha
-        .execute(RECAPTCHA_SITE_KEY, { action: RECAPTCHA_ACTION })
-        .then(resolve)
-        .catch(reject);
-    });
-  });
+function getRecaptchaV2Api(): RecaptchaV2Api | undefined {
+  return (window as Window & { grecaptcha?: RecaptchaV2Api }).grecaptcha;
 }
 
 const features = [
@@ -61,11 +51,90 @@ function SignupForm() {
   const callbackUrl = searchParams.get('callbackUrl') || '/dashboard';
   const prefillEmail = searchParams.get('email') || '';
   const [isLoading, setIsLoading] = useState(false);
-  const [isRecaptchaReady, setIsRecaptchaReady] = useState(!RECAPTCHA_SITE_KEY);
+  const [isRecaptchaReady, setIsRecaptchaReady] = useState(!SIGNUP_RECAPTCHA_SITE_KEY);
+  const [recaptchaToken, setRecaptchaToken] = useState('');
   const [error, setError] = useState('');
   const [name, setName] = useState('');
   const [email, setEmail] = useState(prefillEmail);
   const [password, setPassword] = useState('');
+  const recaptchaContainerRef = useRef<HTMLDivElement>(null);
+  const recaptchaWidgetIdRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!SIGNUP_RECAPTCHA_SITE_KEY) return;
+
+    let cancelled = false;
+    let attempts = 0;
+    let retryTimer: number | undefined;
+
+    const showLoadError = () => {
+      if (cancelled) return;
+      setIsRecaptchaReady(false);
+      setError('The security check could not load. Check any content blocker and refresh the page.');
+    };
+
+    const renderWidget = () => {
+      if (cancelled || recaptchaWidgetIdRef.current !== null) return;
+
+      const recaptcha = getRecaptchaV2Api();
+      const container = recaptchaContainerRef.current;
+      if (!recaptcha?.render || !container) {
+        attempts += 1;
+        if (attempts >= 50) {
+          showLoadError();
+          return;
+        }
+        retryTimer = window.setTimeout(renderWidget, 100);
+        return;
+      }
+
+      try {
+        recaptchaWidgetIdRef.current = recaptcha.render(container, {
+          sitekey: SIGNUP_RECAPTCHA_SITE_KEY,
+          theme: 'light',
+          size: 'normal',
+          callback: (token) => {
+            setRecaptchaToken(token);
+            setError('');
+          },
+          'expired-callback': () => setRecaptchaToken(''),
+          'error-callback': () => {
+            setRecaptchaToken('');
+            setError('The security check failed to load. Please try again.');
+          },
+        });
+        setIsRecaptchaReady(true);
+      } catch {
+        showLoadError();
+      }
+    };
+
+    let script = document.querySelector<HTMLScriptElement>('script[data-signup-recaptcha]');
+    if (!script) {
+      script = document.createElement('script');
+      script.src = 'https://www.google.com/recaptcha/api.js?render=explicit';
+      script.async = true;
+      script.defer = true;
+      script.dataset.signupRecaptcha = 'true';
+      script.addEventListener('load', renderWidget, { once: true });
+      script.addEventListener('error', showLoadError, { once: true });
+      document.head.appendChild(script);
+    } else {
+      retryTimer = window.setTimeout(renderWidget, 0);
+    }
+
+    return () => {
+      cancelled = true;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+    };
+  }, []);
+
+  const resetRecaptcha = () => {
+    if (recaptchaWidgetIdRef.current !== null) {
+      getRecaptchaV2Api()?.reset(recaptchaWidgetIdRef.current);
+    }
+    setRecaptchaToken('');
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -73,11 +142,8 @@ function SignupForm() {
     setError('');
 
     try {
-      let recaptchaToken: string | undefined;
-      try {
-        recaptchaToken = await createRecaptchaToken();
-      } catch {
-        setError('The security check could not load. Please refresh the page and try again.');
+      if (SIGNUP_RECAPTCHA_SITE_KEY && !recaptchaToken) {
+        setError('Please complete the security check.');
         setIsLoading(false);
         return;
       }
@@ -93,6 +159,7 @@ function SignupForm() {
 
       if (!registerResponse.ok) {
         setError(registerData.error || 'Failed to create account');
+        resetRecaptcha();
         setIsLoading(false);
         return;
       }
@@ -119,17 +186,6 @@ function SignupForm() {
 
   return (
     <>
-      {RECAPTCHA_SITE_KEY && (
-        <Script
-          src={`https://www.google.com/recaptcha/api.js?render=${encodeURIComponent(RECAPTCHA_SITE_KEY)}`}
-          strategy="afterInteractive"
-          onReady={() => setIsRecaptchaReady(true)}
-          onError={() => {
-            setIsRecaptchaReady(false);
-            setError('The security check could not load. Check any content blocker and refresh the page.');
-          }}
-        />
-      )}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
@@ -253,18 +309,33 @@ function SignupForm() {
             </div>
           </div>
 
+          {SIGNUP_RECAPTCHA_SITE_KEY && (
+            <div className="flex min-h-[78px] items-center justify-center overflow-x-auto rounded-lg border border-gray-200 bg-gray-50 p-2">
+              <div ref={recaptchaContainerRef} />
+            </div>
+          )}
+
           <button
             type="submit"
-            disabled={isLoading || !isRecaptchaReady}
+            disabled={
+              isLoading ||
+              !isRecaptchaReady ||
+              Boolean(SIGNUP_RECAPTCHA_SITE_KEY && !recaptchaToken)
+            }
             className={cn(
               'btn btn-primary w-full justify-center',
-              (isLoading || !isRecaptchaReady) && 'opacity-70 cursor-not-allowed'
+              (isLoading ||
+                !isRecaptchaReady ||
+                Boolean(SIGNUP_RECAPTCHA_SITE_KEY && !recaptchaToken)) &&
+                'opacity-70 cursor-not-allowed'
             )}
           >
             {isLoading ? (
               <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
             ) : !isRecaptchaReady ? (
               'Loading security check…'
+            ) : SIGNUP_RECAPTCHA_SITE_KEY && !recaptchaToken ? (
+              'Complete security check'
             ) : (
               <>
                 Create Account
@@ -285,30 +356,6 @@ function SignupForm() {
             Privacy Policy
           </Link>
         </p>
-
-        {RECAPTCHA_SITE_KEY && (
-          <p className="mt-2 text-center text-[11px] leading-4 text-gray-400">
-            This site is protected by reCAPTCHA and the Google{' '}
-            <a
-              href="https://policies.google.com/privacy"
-              target="_blank"
-              rel="noreferrer"
-              className="underline hover:text-gray-600"
-            >
-              Privacy Policy
-            </a>{' '}
-            and{' '}
-            <a
-              href="https://policies.google.com/terms"
-              target="_blank"
-              rel="noreferrer"
-              className="underline hover:text-gray-600"
-            >
-              Terms of Service
-            </a>{' '}
-            apply.
-          </p>
-        )}
 
         {/* Footer */}
         <p className="mt-6 text-center text-sm text-gray-500">

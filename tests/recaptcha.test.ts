@@ -1,6 +1,44 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { verifyRecaptchaV3 } from '../src/lib/recaptcha';
+import { verifyRecaptchaV2, verifyRecaptchaV3 } from '../src/lib/recaptcha';
+
+test('reCAPTCHA v2 accepts a successful checkbox token', async () => {
+  let submittedBody = '';
+  const result = await verifyRecaptchaV2({
+    token: 'checkbox-token',
+    remoteIp: '203.0.113.10',
+    secretKey: 'v2-secret',
+    fetchImpl: async (_input, init) => {
+      submittedBody = init?.body?.toString() || '';
+      return new Response(JSON.stringify({ success: true }));
+    },
+  });
+
+  assert.deepEqual(result, { success: true, skipped: false });
+  assert.equal(submittedBody, 'secret=v2-secret&response=checkbox-token&remoteip=203.0.113.10');
+});
+
+test('reCAPTCHA v2 rejects missing and invalid checkbox tokens', async () => {
+  const missing = await verifyRecaptchaV2({
+    token: undefined,
+    secretKey: 'v2-secret',
+  });
+  assert.deepEqual(missing, { success: false, reason: 'missing_token' });
+
+  const invalid = await verifyRecaptchaV2({
+    token: 'invalid-token',
+    secretKey: 'v2-secret',
+    fetchImpl: async () => new Response(JSON.stringify({
+      success: false,
+      'error-codes': ['invalid-input-response'],
+    })),
+  });
+  assert.deepEqual(invalid, {
+    success: false,
+    reason: 'invalid_token',
+    errorCodes: ['invalid-input-response'],
+  });
+});
 
 test('reCAPTCHA is optional when no secret key is configured', async () => {
   const result = await verifyRecaptchaV3({
